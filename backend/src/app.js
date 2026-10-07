@@ -16,29 +16,58 @@ import { validateEnvironment } from './config/env.js';
 validateEnvironment();
 
 const app = express();
+
+// Parse FRONTEND_ORIGIN and normalize by removing trailing slashes
 const allowedOrigins = (process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173')
   .split(',')
-  .map((origin) => origin.trim());
+  .map((origin) => origin.trim().replace(/\/$/, ''))
+  .concat(['http://localhost:5173', 'http://localhost:3000']);
 
 app.disable('x-powered-by');
-app.use(helmet());
-app.use(cors({
-  origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error('Origin is not allowed by CORS.'));
-  },
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-}));
+
+// Configure Helmet to allow Cross-Origin Resource Sharing
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  })
+);
+
+// Dynamic CORS configuration
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Allow requests with no origin (Postman, server-to-server, or mobile apps)
+      if (!origin) return callback(null, true);
+
+      const normalizedOrigin = origin.replace(/\/$/, '');
+      if (allowedOrigins.includes(normalizedOrigin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`Origin ${origin} is not allowed by CORS.`));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  })
+);
+
 app.use(express.json({ limit: '32kb' }));
-app.get('/api/health', asyncHandler(async (_req, res) => {
-  await db.query('SELECT 1');
-  res.json({ status: 'ok' });
-}));
+
+app.get(
+  '/api/health',
+  asyncHandler(async (_req, res) => {
+    await db.query('SELECT 1');
+    res.json({ status: 'ok' });
+  })
+);
+
 app.use('/api/auth', authRoutes);
 app.use('/api/dashboard', authenticate, dashboardRoutes);
 app.use('/api/diary', authenticate, diaryRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/alerts', authenticate, alertRoutes);
+
 app.use(notFoundHandler);
 app.use(errorHandler);
 
@@ -46,11 +75,15 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const port = Number(process.env.PORT ?? 4000);
   db.query('SELECT 1')
     .then(() => {
-      app.listen(port, () => console.info(`Family Management API listening on port ${port}.`));
+      app.listen(port, () =>
+        console.info(`Family Management API listening on port ${port}.`)
+      );
     })
     .catch(async (error) => {
       console.error(`Could not connect to PostgreSQL: ${error.message}`);
-      console.error('Check that PostgreSQL is running and DATABASE_URL in backend/.env is correct.');
+      console.error(
+        'Check that PostgreSQL is running and DATABASE_URL in backend/.env is correct.'
+      );
       await db.pool.end();
       process.exitCode = 1;
     });
